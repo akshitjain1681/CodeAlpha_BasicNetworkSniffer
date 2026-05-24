@@ -4,7 +4,6 @@ import socket
 from collections import Counter
 
 packet_count = 0
-
 tcp_count = 0
 udp_count = 0
 icmp_count = 0
@@ -192,9 +191,9 @@ def process_packet(packet):
         show_insights()
 
 
-print("\n[*] Intelligent Network Sniffer Started...")
-print("[*] Capturing Live Traffic...")
-print("[*] Insights will appear every 10 packets.")
-print("[*] Press CTRL + C to stop.\n")
+print("\nNetwork Sniffer Started...")
+print("Capturing Live Traffic...")
+print("Detailed Insights will appear every 10 packets.")
+print("Press CTRL + C to stop.\n")
 
 sniff(prn=process_packet, store=False)
