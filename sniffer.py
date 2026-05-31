@@ -1,6 +1,12 @@
 from scapy.all import *
 from datetime import datetime
 import socket
+import ipaddress
+import json
+import re
+import subprocess
+import urllib.request
+import urllib.error
 from collections import Counter
 
 packet_count = 0
@@ -10,6 +16,8 @@ icmp_count = 0
 
 destination_ips = Counter()
 applications = Counter()
+region_cache = {}
+route_cache = {}
 
 
 def get_service(port):
@@ -43,6 +51,60 @@ def resolve_hostname(ip):
         return "Unknown"
 
 
+def get_region(ip):
+
+    if ip in region_cache:
+        return region_cache[ip]
+
+    try:
+        address = ipaddress.ip_address(ip)
+        if address.is_private or address.is_loopback or address.is_reserved or address.is_multicast:
+            region_cache[ip] = "Local Network"
+            return region_cache[ip]
+    except ValueError:
+        region_cache[ip] = "Unknown"
+        return region_cache[ip]
+
+    try:
+        url = f"http://ip-api.com/json/{ip}?fields=status,country,regionName,city"
+        with urllib.request.urlopen(url, timeout=3) as response:
+            data = json.loads(response.read().decode("utf-8", errors="ignore"))
+            if data.get("status") == "success":
+                country = data.get("country", "")
+                region = data.get("regionName", "")
+                city = data.get("city", "")
+                parts = [part for part in (city, region, country) if part]
+                region_cache[ip] = ", ".join(parts) if parts else "Unknown"
+                return region_cache[ip]
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, json.JSONDecodeError):
+        pass
+
+    region_cache[ip] = "Unknown"
+    return region_cache[ip]
+
+
+def get_network_loop(dest_ip):
+
+    if dest_ip in route_cache:
+        return route_cache[dest_ip]
+
+    route_ips = []
+
+    try:
+        output = subprocess.check_output(["tracert", "-d", "-h", "10", dest_ip], stderr=subprocess.DEVNULL, text=True, timeout=8)
+        for line in output.splitlines():
+            match = re.search(r"(\d+\.\d+\.\d+\.\d+)", line)
+            if match:
+                hop_ip = match.group(1)
+                if hop_ip not in route_ips:
+                    route_ips.append(hop_ip)
+    except Exception:
+        pass
+
+    route_cache[dest_ip] = route_ips if route_ips else ["Unknown"]
+    return route_cache[dest_ip]
+
+
 def show_insights():
 
     print("\n================ NETWORK INSIGHTS ================")
@@ -73,6 +135,14 @@ def process_packet(packet):
     global icmp_count
 
     packet_count += 1
+    src_ip = None
+    dst_ip = None
+    protocol_name = "Unknown"
+    src_region = "Unknown"
+    dst_region = "Unknown"
+    source_port = "N/A"
+    destination_port = "N/A"
+    route_ips = []
 
     print("\n===================================================")
     print("                 PACKET CAPTURED")
@@ -101,6 +171,14 @@ def process_packet(packet):
         print(f"Source Host        : {src_host}")
         print(f"Destination Host   : {dst_host}")
 
+        src_region = get_region(src_ip)
+        dst_region = get_region(dst_ip)
+        print(f"Source Region      : {src_region}")
+        print(f"Destination Region : {dst_region}")
+
+        route_ips = get_network_loop(dst_ip)
+        print(f"Network Loop       : {', '.join(route_ips)}")
+
         if protocol == 6:
 
             protocol_name = "TCP"
@@ -126,17 +204,27 @@ def process_packet(packet):
 
     if packet.haslayer(TCP):
 
-        sport = packet[TCP].sport
-        dport = packet[TCP].dport
+        source_port = packet[TCP].sport
+        destination_port = packet[TCP].dport
 
-        print(f"Source Port        : {sport}")
-        print(f"Destination Port   : {dport}")
+        print(f"Source Port        : {source_port}")
+        print(f"Destination Port   : {destination_port}")
 
-        app_name = get_service(dport)
+        app_name = get_service(destination_port)
 
         print(f"Application        : {app_name}")
 
     elif packet.haslayer(UDP):
+
+        source_port = packet[UDP].sport
+        destination_port = packet[UDP].dport
+
+        print(f"Source Port        : {source_port}")
+        print(f"Destination Port   : {destination_port}")
+
+        app_name = get_service(destination_port)
+
+        print(f"Application        : {app_name}")
 
         sport = packet[UDP].sport
         dport = packet[UDP].dport
@@ -183,6 +271,13 @@ def process_packet(packet):
             file.write(f"Source IP: {src_ip}\n")
             file.write(f"Destination IP: {dst_ip}\n")
             file.write(f"Protocol: {protocol_name}\n")
+            file.write(f"Source Region: {src_region}\n")
+            file.write(f"Destination Region: {dst_region}\n")
+            file.write(f"Network Loop: {', '.join(route_ips)}\n")
+
+        if source_port != "N/A":
+            file.write(f"Source Port: {source_port}\n")
+            file.write(f"Destination Port: {destination_port}\n")
 
         file.write(packet.summary() + "\n")
 
